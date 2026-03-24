@@ -1,0 +1,21 @@
+services:
+  homelab-monitor:
+    build: .
+    container_name: homelab-monitor
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      # Docker socket — allows container/image management
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Host proc — allows accurate host metrics via psutil
+      - /proc:/host/proc:ro
+      # Compose project dirs — add yours here so compose actions work
+      # - /home/pedro/minecraft-server:/projects/minecraft:ro
+      # - /home/pedro/other-project:/projects/other:ro
+    environment:
+      - PROC_PATH=/host/proc
+    # Required for psutil to read host metrics inside container
+    pid: host
+    # Network host gives accurate network stats
+    network_mode: host

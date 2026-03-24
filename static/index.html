@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>⚙ Homelab Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0a0e14;
+            --bg-secondary: #0f1319;
+            --bg-card: #111822;
+            --bg-card-hover: #161e2a;
+            --bg-elevated: #1a2332;
+            --border: #1e2a3a;
+            --border-bright: #2a3a4e;
+            --text-primary: #e2e8f0;
+            --text-secondary: #8899aa;
+            --text-muted: #556677;
+            --accent: #22d3ee;
+            --accent-dim: #0891b2;
+            --accent-glow: rgba(34, 211, 238, 0.15);
+            --green: #34d399;
+            --green-dim: rgba(52, 211, 153, 0.15);
+            --red: #f87171;
+            --red-dim: rgba(248, 113, 113, 0.15);
+            --amber: #fbbf24;
+            --amber-dim: rgba(251, 191, 36, 0.15);
+            --purple: #a78bfa;
+            --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+            --font-sans: 'Outfit', system-ui, sans-serif;
+            --radius: 8px;
+            --radius-lg: 12px;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse-ring { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(2); opacity: 0; } }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: translateX(0); } }
+
+        .fade-in { animation: fadeIn 0.35s ease-out both; }
+        .stagger-1 { animation-delay: 0.05s; }
+        .stagger-2 { animation-delay: 0.1s; }
+        .stagger-3 { animation-delay: 0.15s; }
+        .stagger-4 { animation-delay: 0.2s; }
+
+        /* Noise overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 9999;
+        }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 8px;
+        }
+        .toast {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            padding: 10px 16px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            animation: slideIn 0.3s ease-out;
+            max-width: 380px;
+            backdrop-filter: blur(12px);
+        }
+        .toast-success { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+        .toast-error { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+        .toast-info { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const API = window.location.origin;
+const WS_BASE = `ws://${window.location.host}`;
+
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
+const formatBytes = (bytes, decimals = 1) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
+};
+
+const formatUptime = (seconds) => {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+};
+
+const api = async (path, opts = {}) => {
+    const res = await fetch(`${API}${path}`, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'API Error');
+    }
+    return res.json();
+};
+
+// ─── TOAST SYSTEM ────────────────────────────────────────────────────────────
+let toastId = 0;
+const toastListeners = new Set();
+let toasts = [];
+
+const addToast = (message, type = 'info') => {
+    const id = ++toastId;
+    toasts = [...toasts, { id, message, type }];
+    toastListeners.forEach(fn => fn(toasts));
+    setTimeout(() => {
+        toasts = toasts.filter(t => t.id !== id);
+        toastListeners.forEach(fn => fn(toasts));
+    }, 4000);
+};
+
+const ToastContainer = () => {
+    const [items, setItems] = useState([]);
+    useEffect(() => {
+        toastListeners.add(setItems);
+        return () => toastListeners.delete(setItems);
+    }, []);
+    return (
+        <div className="toast-container">
+            {items.map(t => (
+                <div key={t.id} className={`toast toast-${t.type}`}>
+                    {t.type === 'success' ? '✓' : t.type === 'error' ? '✗' : 'ℹ'} {t.message}
+                </div>
+            ))}
+        </div>
+    );
+};
+
+// ─── METRIC RING ─────────────────────────────────────────────────────────────
+const MetricRing = ({ value, label, detail, color = 'var(--accent)', size = 90, stroke = 6 }) => {
+    const r = (size - stroke) / 2;
+    const circ = 2 * Math.PI * r;
+    const offset = circ - (value / 100) * circ;
+    return (
+        <div style={{ textAlign: 'center' }}>
+            <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+                <circle cx={size/2} cy={size/2} r={r} fill="none"
+                    stroke="var(--border)" strokeWidth={stroke} />
+                <circle cx={size/2} cy={size/2} r={r} fill="none"
+                    stroke={color} strokeWidth={stroke}
+                    strokeDasharray={circ} strokeDashoffset={offset}
+                    strokeLinecap="round"
+                    style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
+            </svg>
+            <div style={{
+                marginTop: -size/2 - 18,
+                marginBottom: size/2 - 22,
+                fontFamily: 'var(--font-mono)',
+                fontSize: '18px',
+                fontWeight: 700,
+                color
+            }}>
+                {Math.round(value)}%
+            </div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginTop: 4 }}>{label}</div>
+            {detail && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{detail}</div>}
+        </div>
+    );
+};
+
+// ─── STATUS BADGE ────────────────────────────────────────────────────────────
+const StatusBadge = ({ status }) => {
+    const map = {
+        running: { color: 'var(--green)', bg: 'var(--green-dim)', icon: '●' },
+        exited:  { color: 'var(--red)', bg: 'var(--red-dim)', icon: '■' },
+        paused:  { color: 'var(--amber)', bg: 'var(--amber-dim)', icon: '❚❚' },
+        created: { color: 'var(--text-muted)', bg: 'var(--bg-elevated)', icon: '○' },
+        restarting: { color: 'var(--amber)', bg: 'var(--amber-dim)', icon: '↻' },
+    };
+    const s = map[status] || map.created;
+    return (
+        <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 500,
+            color: s.color, background: s.bg,
+            padding: '3px 10px', borderRadius: 20,
+            textTransform: 'uppercase', letterSpacing: '0.5px'
+        }}>
+            <span style={{ fontSize: '8px' }}>{s.icon}</span> {status}
+        </span>
+    );
+};
+
+// ─── ACTION BUTTON ───────────────────────────────────────────────────────────
+const ActionBtn = ({ icon, label, onClick, color = 'var(--accent)', disabled = false, small = false }) => (
+    <button disabled={disabled} onClick={onClick} title={label} style={{
+        display: 'inline-flex', alignItems: 'center', gap: small ? 4 : 6,
+        padding: small ? '4px 8px' : '6px 12px',
+        fontSize: small ? '11px' : '12px',
+        fontFamily: 'var(--font-mono)',
+        fontWeight: 500,
+        color: disabled ? 'var(--text-muted)' : color,
+        background: disabled ? 'transparent' : `color-mix(in srgb, ${color} 10%, transparent)`,
+        border: `1px solid ${disabled ? 'var(--border)' : `color-mix(in srgb, ${color} 30%, transparent)`}`,
+        borderRadius: 'var(--radius)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition: 'all 0.2s',
+    }}
+    onMouseEnter={e => { if (!disabled) { e.target.style.background = `color-mix(in srgb, ${color} 20%, transparent)`; }}}
+    onMouseLeave={e => { if (!disabled) { e.target.style.background = `color-mix(in srgb, ${color} 10%, transparent)`; }}}
+    >
+        <span style={{ fontSize: small ? '12px' : '14px' }}>{icon}</span>
+        {!small && label}
+    </button>
+);
+
+// ─── CARD ────────────────────────────────────────────────────────────────────
+const Card = ({ children, style = {}, className = '' }) => (
+    <div className={`fade-in ${className}`} style={{
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-lg)',
+        padding: 20,
+        transition: 'border-color 0.2s',
+        ...style,
+    }}
+    onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--border-bright)'}
+    onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
+    >
+        {children}
+    </div>
+);
+
+// ─── SYSTEM OVERVIEW PANEL ───────────────────────────────────────────────────
+const SystemOverview = ({ metrics, dockerInfo }) => {
+    if (!metrics) return null;
+    const cpuColor = metrics.cpu_percent > 80 ? 'var(--red)' : metrics.cpu_percent > 50 ? 'var(--amber)' : 'var(--accent)';
+    const memColor = metrics.memory_percent > 80 ? 'var(--red)' : metrics.memory_percent > 50 ? 'var(--amber)' : 'var(--green)';
+    const diskColor = metrics.disk_percent > 85 ? 'var(--red)' : metrics.disk_percent > 70 ? 'var(--amber)' : 'var(--purple)';
+
+    return (
+        <Card className="stagger-1">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+                <div>
+                    <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
+                        <span style={{ color: 'var(--accent)', marginRight: 8 }}>◆</span>SISTEMA
+                    </h2>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>
+                        uptime {formatUptime(metrics.uptime_seconds)}
+                        {dockerInfo && ` · docker ${dockerInfo.version}`}
+                    </span>
+                </div>
+                {metrics.load_avg && (
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-secondary)', textAlign: 'right' }}>
+                        <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>LOAD AVG</div>
+                        {metrics.load_avg.join(' / ')}
+                    </div>
+                )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 16 }}>
+                <MetricRing value={metrics.cpu_percent} label="CPU" color={cpuColor}
+                    detail={metrics.per_cpu ? `${metrics.per_cpu.length} cores` : ''} />
+                <MetricRing value={metrics.memory_percent} label="RAM" color={memColor}
+                    detail={`${formatBytes(metrics.memory_used)} / ${formatBytes(metrics.memory_total)}`} />
+                <MetricRing value={metrics.disk_percent} label="DISCO" color={diskColor}
+                    detail={`${formatBytes(metrics.disk_used)} / ${formatBytes(metrics.disk_total)}`} />
+            </div>
+            {metrics.per_cpu && (
+                <div style={{ marginTop: 18, display: 'flex', gap: 3, alignItems: 'end', height: 32 }}>
+                    {metrics.per_cpu.map((v, i) => (
+                        <div key={i} title={`Core ${i}: ${v}%`} style={{
+                            flex: 1,
+                            height: `${Math.max(v, 3)}%`,
+                            minHeight: 2,
+                            background: v > 80 ? 'var(--red)' : v > 50 ? 'var(--amber)' : 'var(--accent)',
+                            borderRadius: '2px 2px 0 0',
+                            opacity: 0.7,
+                            transition: 'height 0.8s ease',
+                        }} />
+                    ))}
+                </div>
+            )}
+            {dockerInfo && (
+                <div style={{
+                    marginTop: 16, paddingTop: 14,
+                    borderTop: '1px solid var(--border)',
+                    display: 'flex', gap: 20, flexWrap: 'wrap',
+                    fontFamily: 'var(--font-mono)', fontSize: '11px',
+                }}>
+                    <span><span style={{ color: 'var(--green)' }}>▲ {dockerInfo.containers_running}</span> running</span>
+                    <span><span style={{ color: 'var(--red)' }}>■ {dockerInfo.containers_stopped}</span> stopped</span>
+                    <span><span style={{ color: 'var(--text-muted)' }}>◎ {dockerInfo.images}</span> images</span>
+                </div>
+            )}
+        </Card>
+    );
+};
+
+// ─── CONTAINER ROW ───────────────────────────────────────────────────────────
+const ContainerRow = ({ container, onAction, onViewLogs }) => {
+    const [loading, setLoading] = useState(null);
+    const isRunning = container.status === 'running';
+    const isPaused = container.status === 'paused';
+
+    const handleAction = async (action) => {
+        setLoading(action);
+        try {
+            await api(`/api/containers/${container.id}`, {
+                method: 'POST',
+                body: JSON.stringify({ action }),
+            });
+            addToast(`${container.name}: ${action} ✓`, 'success');
+            onAction();
+        } catch (e) {
+            addToast(`${container.name}: ${e.message}`, 'error');
+        }
+        setLoading(null);
+    };
+
+    return (
+        <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto auto',
+            gap: 12,
+            alignItems: 'center',
+            padding: '12px 0',
+            borderBottom: '1px solid var(--border)',
+        }}>
+            <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600, fontSize: '14px' }}>{container.name}</span>
+                    <StatusBadge status={container.status} />
+                    {container.compose_project && (
+                        <span style={{
+                            fontSize: '10px', fontFamily: 'var(--font-mono)',
+                            color: 'var(--purple)', background: 'rgba(167,139,250,0.1)',
+                            padding: '2px 7px', borderRadius: 10,
+                        }}>
+                            ⎔ {container.compose_project}
+                        </span>
+                    )}
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)', marginTop: 3 }}>
+                    {container.image}
+                    <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>
+                    {container.id}
+                </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                {isRunning ? (
+                    <>
+                        <ActionBtn icon="↻" label="Restart" small onClick={() => handleAction('restart')}
+                            color="var(--amber)" disabled={loading} />
+                        <ActionBtn icon="■" label="Stop" small onClick={() => handleAction('stop')}
+                            color="var(--red)" disabled={loading} />
+                        <ActionBtn icon="❚❚" label="Pause" small onClick={() => handleAction('pause')}
+                            color="var(--text-secondary)" disabled={loading} />
+                    </>
+                ) : isPaused ? (
+                    <ActionBtn icon="▶" label="Unpause" small onClick={() => handleAction('unpause')}
+                        color="var(--green)" disabled={loading} />
+                ) : (
+                    <>
+                        <ActionBtn icon="▶" label="Start" small onClick={() => handleAction('start')}
+                            color="var(--green)" disabled={loading} />
+                        <ActionBtn icon="✕" label="Remove" small onClick={() => handleAction('remove')}
+                            color="var(--red)" disabled={loading} />
+                    </>
+                )}
+            </div>
+
+            <ActionBtn icon="⧉" label="Logs" small onClick={() => onViewLogs(container)}
+                color="var(--text-secondary)" />
+        </div>
+    );
+};
+
+// ─── CONTAINERS PANEL ────────────────────────────────────────────────────────
+const ContainersPanel = ({ containers, onRefresh, onViewLogs }) => {
+    const [filter, setFilter] = useState('');
+    const [statusFilter, setStatusFilter] = useState('all');
+
+    const filtered = useMemo(() => {
+        if (!containers) return [];
+        return containers.filter(c => {
+            const matchName = c.name.toLowerCase().includes(filter.toLowerCase()) ||
+                              c.image.toLowerCase().includes(filter.toLowerCase());
+            const matchStatus = statusFilter === 'all' || c.status === statusFilter;
+            return matchName && matchStatus;
+        });
+    }, [containers, filter, statusFilter]);
+
+    const running = containers ? containers.filter(c => c.status === 'running').length : 0;
+    const total = containers ? containers.length : 0;
+
+    return (
+        <Card className="stagger-2" style={{ gridColumn: 'span 2' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
+                    <span style={{ color: 'var(--green)', marginRight: 8 }}>◆</span>
+                    CONTAINERS
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)', marginLeft: 10, fontWeight: 400 }}>
+                        {running}/{total} running
+                    </span>
+                </h2>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                        type="text" placeholder="Filtrar..." value={filter}
+                        onChange={e => setFilter(e.target.value)}
+                        style={{
+                            background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                            borderRadius: 'var(--radius)', padding: '6px 12px',
+                            color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '12px',
+                            outline: 'none', width: 180,
+                        }}
+                        onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+                        onBlur={e => e.target.style.borderColor = 'var(--border)'}
+                    />
+                    <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{
+                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius)', padding: '6px 10px',
+                        color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '12px',
+                        outline: 'none', cursor: 'pointer',
+                    }}>
+                        <option value="all">Todos</option>
+                        <option value="running">Running</option>
+                        <option value="exited">Exited</option>
+                        <option value="paused">Paused</option>
+                    </select>
+                    <ActionBtn icon="⟳" label="Refresh" onClick={onRefresh} small />
+                </div>
+            </div>
+            <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+                {filtered.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
+                        {containers && containers.length === 0 ? 'Nenhum container encontrado' : 'Nenhum resultado para o filtro'}
+                    </div>
+                ) : filtered.map(c => (
+                    <ContainerRow key={c.id} container={c} onAction={onRefresh} onViewLogs={onViewLogs} />
+                ))}
+            </div>
+        </Card>
+    );
+};
+
+// ─── LOG VIEWER MODAL ────────────────────────────────────────────────────────
+const LogViewer = ({ container, onClose }) => {
+    const [logs, setLogs] = useState([]);
+    const [connected, setConnected] = useState(false);
+    const logRef = useRef(null);
+    const wsRef = useRef(null);
+    const [autoScroll, setAutoScroll] = useState(true);
+
+    useEffect(() => {
+        if (!container) return;
+        const ws = new WebSocket(`${WS_BASE}/ws/logs/${container.id}?tail=150`);
+        wsRef.current = ws;
+        ws.onopen = () => setConnected(true);
+        ws.onmessage = (e) => {
+            setLogs(prev => {
+                const next = [...prev, e.data];
+                return next.length > 2000 ? next.slice(-1500) : next;
+            });
+        };
+        ws.onclose = () => setConnected(false);
+        ws.onerror = () => setConnected(false);
+        return () => ws.close();
+    }, [container]);
+
+    useEffect(() => {
+        if (autoScroll && logRef.current) {
+            logRef.current.scrollTop = logRef.current.scrollHeight;
+        }
+    }, [logs, autoScroll]);
+
+    if (!container) return null;
+
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 24,
+        }} onClick={onClose}>
+            <div onClick={e => e.stopPropagation()} style={{
+                background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-lg)', width: '100%', maxWidth: 900,
+                maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+                animation: 'fadeIn 0.2s ease-out',
+            }}>
+                <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '14px 20px', borderBottom: '1px solid var(--border)',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{
+                            width: 8, height: 8, borderRadius: '50%',
+                            background: connected ? 'var(--green)' : 'var(--red)',
+                            display: 'inline-block',
+                        }} />
+                        <span style={{ fontWeight: 600, fontSize: '14px' }}>{container.name}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>
+                            {connected ? 'streaming' : 'disconnected'}
+                        </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
+                            auto-scroll
+                        </label>
+                        <ActionBtn icon="✕" label="Fechar" small onClick={onClose} color="var(--text-secondary)" />
+                    </div>
+                </div>
+                <div ref={logRef} style={{
+                    flex: 1, overflowY: 'auto', padding: '12px 16px',
+                    fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: 1.65,
+                    color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                }}>
+                    {logs.length === 0 ? (
+                        <div style={{ color: 'var(--text-muted)', padding: 20, textAlign: 'center' }}>
+                            Aguardando logs...
+                        </div>
+                    ) : logs.map((line, i) => (
+                        <div key={i} style={{
+                            padding: '1px 0',
+                            borderBottom: '1px solid rgba(30,42,58,0.3)',
+                        }}>
+                            {line}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ─── COMPOSE PANEL ───────────────────────────────────────────────────────────
+const ComposePanel = ({ projects, onRefresh }) => {
+    const [loading, setLoading] = useState(null);
+    const [output, setOutput] = useState(null);
+
+    const handleAction = async (project, action) => {
+        setLoading(`${project.name}-${action}`);
+        try {
+            const res = await api('/api/compose', {
+                method: 'POST',
+                body: JSON.stringify({ action, project_dir: project.working_dir }),
+            });
+            if (res.ok) {
+                addToast(`${project.name}: ${action} ✓`, 'success');
+            } else {
+                addToast(`${project.name}: ${res.stderr || 'erro'}`, 'error');
+            }
+            if (res.stdout || res.stderr) {
+                setOutput({ project: project.name, action, stdout: res.stdout, stderr: res.stderr });
+            }
+            onRefresh();
+        } catch (e) {
+            addToast(`${project.name}: ${e.message}`, 'error');
+        }
+        setLoading(null);
+    };
+
+    return (
+        <Card className="stagger-3">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
+                    <span style={{ color: 'var(--purple)', marginRight: 8 }}>◆</span>COMPOSE
+                </h2>
+                <ActionBtn icon="⟳" label="Refresh" onClick={onRefresh} small />
+            </div>
+            {(!projects || projects.length === 0) ? (
+                <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                    Nenhum projeto compose detectado
+                </div>
+            ) : projects.map(p => (
+                <div key={p.name} style={{
+                    padding: '12px 0', borderBottom: '1px solid var(--border)',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <div>
+                            <span style={{ fontWeight: 600, fontSize: '14px' }}>⎔ {p.name}</span>
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', marginTop: 2 }}>
+                                {p.working_dir}
+                            </div>
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {p.services.map(s => (
+                            <span key={s.name} style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 4,
+                                fontSize: '11px', fontFamily: 'var(--font-mono)',
+                                padding: '2px 8px', borderRadius: 4,
+                                background: s.status === 'running' ? 'var(--green-dim)' : 'var(--red-dim)',
+                                color: s.status === 'running' ? 'var(--green)' : 'var(--red)',
+                            }}>
+                                {s.status === 'running' ? '●' : '■'} {s.name}
+                            </span>
+                        ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                        <ActionBtn icon="▶" label="Up" small onClick={() => handleAction(p, 'up')}
+                            color="var(--green)" disabled={!!loading} />
+                        <ActionBtn icon="■" label="Down" small onClick={() => handleAction(p, 'down')}
+                            color="var(--red)" disabled={!!loading} />
+                        <ActionBtn icon="⟳" label="Rebuild" small onClick={() => handleAction(p, 'rebuild')}
+                            color="var(--amber)" disabled={!!loading} />
+                        <ActionBtn icon="↓" label="Pull" small onClick={() => handleAction(p, 'pull')}
+                            color="var(--accent)" disabled={!!loading} />
+                    </div>
+                </div>
+            ))}
+            {output && (
+                <div style={{
+                    marginTop: 12, padding: 10, background: 'var(--bg-primary)',
+                    borderRadius: 'var(--radius)', fontFamily: 'var(--font-mono)', fontSize: '10px',
+                    color: 'var(--text-muted)', maxHeight: 150, overflowY: 'auto', whiteSpace: 'pre-wrap',
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <span style={{ color: 'var(--accent)' }}>{output.project} → {output.action}</span>
+                        <span style={{ cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setOutput(null)}>✕</span>
+                    </div>
+                    {output.stdout && <div>{output.stdout}</div>}
+                    {output.stderr && <div style={{ color: 'var(--amber)' }}>{output.stderr}</div>}
+                </div>
+            )}
+        </Card>
+    );
+};
+
+// ─── NETWORK WIDGET ──────────────────────────────────────────────────────────
+const NetworkWidget = ({ current, previous }) => {
+    const sentRate = previous ? (current.net_sent - previous.net_sent) / 2 : 0;
+    const recvRate = previous ? (current.net_recv - previous.net_recv) / 2 : 0;
+    return (
+        <Card className="stagger-4">
+            <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px', marginBottom: 16 }}>
+                <span style={{ color: 'var(--amber)', marginRight: 8 }}>◆</span>REDE
+            </h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ background: 'var(--bg-primary)', padding: 12, borderRadius: 'var(--radius)' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 4 }}>▲ UPLOAD</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 600, color: 'var(--accent)' }}>
+                        {formatBytes(sentRate)}/s
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', marginTop: 4 }}>
+                        total: {formatBytes(current.net_sent)}
+                    </div>
+                </div>
+                <div style={{ background: 'var(--bg-primary)', padding: 12, borderRadius: 'var(--radius)' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 4 }}>▼ DOWNLOAD</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 600, color: 'var(--green)' }}>
+                        {formatBytes(recvRate)}/s
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', marginTop: 4 }}>
+                        total: {formatBytes(current.net_recv)}
+                    </div>
+                </div>
+            </div>
+        </Card>
+    );
+};
+
+// ─── MAIN APP ────────────────────────────────────────────────────────────────
+const App = () => {
+    const [metrics, setMetrics] = useState(null);
+    const [prevMetrics, setPrevMetrics] = useState(null);
+    const [containers, setContainers] = useState(null);
+    const [dockerInfo, setDockerInfo] = useState(null);
+    const [composeProjects, setComposeProjects] = useState(null);
+    const [logTarget, setLogTarget] = useState(null);
+    const [wsStatus, setWsStatus] = useState('connecting');
+
+    // WebSocket for real-time metrics
+    useEffect(() => {
+        let ws;
+        let reconnectTimer;
+        const connect = () => {
+            ws = new WebSocket(`${WS_BASE}/ws/metrics`);
+            ws.onopen = () => setWsStatus('connected');
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                setMetrics(prev => {
+                    setPrevMetrics(prev);
+                    return data;
+                });
+            };
+            ws.onclose = () => {
+                setWsStatus('disconnected');
+                reconnectTimer = setTimeout(connect, 3000);
+            };
+            ws.onerror = () => ws.close();
+        };
+        connect();
+        return () => { ws?.close(); clearTimeout(reconnectTimer); };
+    }, []);
+
+    // Fetch containers
+    const fetchContainers = useCallback(async () => {
+        try {
+            const data = await api('/api/containers?all=true');
+            setContainers(data.containers);
+        } catch (e) {
+            addToast(`Erro ao listar containers: ${e.message}`, 'error');
+        }
+    }, []);
+
+    // Fetch docker info
+    const fetchDockerInfo = useCallback(async () => {
+        try {
+            const data = await api('/api/docker/info');
+            setDockerInfo(data);
+        } catch (e) { /* silent */ }
+    }, []);
+
+    // Fetch compose projects
+    const fetchCompose = useCallback(async () => {
+        try {
+            const data = await api('/api/compose');
+            setComposeProjects(data.projects);
+        } catch (e) { /* silent */ }
+    }, []);
+
+    useEffect(() => {
+        fetchContainers();
+        fetchDockerInfo();
+        fetchCompose();
+        const interval = setInterval(() => {
+            fetchContainers();
+            fetchCompose();
+        }, 10000);
+        return () => clearInterval(interval);
+    }, [fetchContainers, fetchDockerInfo, fetchCompose]);
+
+    return (
+        <div style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 24px 40px' }}>
+            {/* Header */}
+            <header style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                marginBottom: 24, paddingBottom: 16,
+                borderBottom: '1px solid var(--border)',
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{
+                        width: 36, height: 36,
+                        background: 'var(--accent-glow)',
+                        border: '1px solid var(--accent-dim)',
+                        borderRadius: 8,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '18px',
+                    }}>⚙</div>
+                    <div>
+                        <h1 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.5px' }}>
+                            Homelab<span style={{ color: 'var(--accent)' }}>Monitor</span>
+                        </h1>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>
+                            painel de controle
+                        </span>
+                    </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        fontSize: '11px', fontFamily: 'var(--font-mono)',
+                        color: wsStatus === 'connected' ? 'var(--green)' : 'var(--red)',
+                    }}>
+                        <span style={{
+                            width: 7, height: 7, borderRadius: '50%',
+                            background: wsStatus === 'connected' ? 'var(--green)' : 'var(--red)',
+                            display: 'inline-block',
+                        }} />
+                        {wsStatus === 'connected' ? 'LIVE' : 'OFFLINE'}
+                    </span>
+                </div>
+            </header>
+
+            {/* Grid */}
+            <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 16,
+            }}>
+                <SystemOverview metrics={metrics} dockerInfo={dockerInfo} />
+                {metrics && <NetworkWidget current={metrics} previous={prevMetrics} />}
+                <ComposePanel projects={composeProjects} onRefresh={() => { fetchCompose(); fetchContainers(); }} />
+                <ContainersPanel containers={containers} onRefresh={fetchContainers} onViewLogs={setLogTarget} />
+            </div>
+
+            {/* Log Modal */}
+            <LogViewer container={logTarget} onClose={() => setLogTarget(null)} />
+
+            {/* Toasts */}
+            <ToastContainer />
+        </div>
+    );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
