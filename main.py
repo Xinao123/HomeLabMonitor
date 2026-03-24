@@ -342,23 +342,43 @@ async def stream_logs(ws: WebSocket, container_id: str, tail: int = 100):
         await ws.close()
         return
 
-    try:
-        log_stream = container.logs(stream=True, follow=True, tail=tail, timestamps=True)
-        for chunk in log_stream:
-            try:
+    queue: asyncio.Queue = asyncio.Queue()
+    stop_event = asyncio.Event()
+
+    def _read_logs():
+        """Blocking log reader — runs in a thread."""
+        try:
+            log_stream = container.logs(stream=True, follow=True, tail=tail, timestamps=True)
+            for chunk in log_stream:
+                if stop_event.is_set():
+                    break
                 line = chunk.decode("utf-8", errors="replace").strip()
                 if line:
-                    await ws.send_text(line)
-            except WebSocketDisconnect:
+                    queue.put_nowait(line)
+        except Exception as e:
+            queue.put_nowait(f"__ERROR__:{e}")
+        finally:
+            queue.put_nowait("__DONE__")
+
+    # Start blocking reader in a thread
+    loop = asyncio.get_event_loop()
+    reader_future = loop.run_in_executor(None, _read_logs)
+
+    try:
+        while True:
+            line = await queue.get()
+            if line == "__DONE__":
                 break
-            except Exception:
+            if line.startswith("__ERROR__:"):
+                await ws.send_json({"error": line[10:]})
                 break
-    except Exception as e:
-        try:
-            await ws.send_json({"error": str(e)})
-        except Exception:
-            pass
+            await ws.send_text(line)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
     finally:
+        stop_event.set()
         client.close()
 
 
@@ -368,7 +388,9 @@ async def get_logs(container_id: str, tail: int = Query(200, ge=1, le=5000)):
     client = get_docker_client()
     try:
         container = client.containers.get(container_id)
-        logs = container.logs(tail=tail, timestamps=True).decode("utf-8", errors="replace")
+        # Run blocking call in thread
+        raw_logs = await asyncio.to_thread(container.logs, tail=tail, timestamps=True)
+        logs = raw_logs.decode("utf-8", errors="replace")
         return {"container": container_id, "logs": logs, "lines": tail}
     except NotFound:
         raise HTTPException(404, f"Container {container_id} not found")

@@ -485,24 +485,73 @@ const ContainersPanel = ({ containers, onRefresh, onViewLogs }) => {
 const LogViewer = ({ container, onClose }) => {
     const [logs, setLogs] = useState([]);
     const [connected, setConnected] = useState(false);
+    const [error, setError] = useState(null);
     const logRef = useRef(null);
     const wsRef = useRef(null);
     const [autoScroll, setAutoScroll] = useState(true);
 
+    // Fallback: fetch logs via HTTP if WebSocket fails
+    const fetchHttpLogs = useCallback(async () => {
+        if (!container) return;
+        try {
+            const data = await api(`/api/containers/${container.id}/logs?tail=200`);
+            if (data.logs) {
+                const lines = data.logs.split('\n').filter(l => l.trim());
+                setLogs(lines);
+                setError(null);
+            }
+        } catch (e) {
+            setError(`HTTP fallback failed: ${e.message}`);
+        }
+    }, [container]);
+
     useEffect(() => {
         if (!container) return;
-        const ws = new WebSocket(`${WS_BASE}/ws/logs/${container.id}?tail=150`);
-        wsRef.current = ws;
-        ws.onopen = () => setConnected(true);
-        ws.onmessage = (e) => {
-            setLogs(prev => {
-                const next = [...prev, e.data];
-                return next.length > 2000 ? next.slice(-1500) : next;
-            });
+        let ws;
+        let fallbackTimer;
+
+        try {
+            ws = new WebSocket(`${WS_BASE}/ws/logs/${container.id}?tail=150`);
+            wsRef.current = ws;
+
+            // If no message in 3s, try HTTP fallback
+            fallbackTimer = setTimeout(() => {
+                if (logs.length === 0) fetchHttpLogs();
+            }, 3000);
+
+            ws.onopen = () => {
+                setConnected(true);
+                setError(null);
+            };
+            ws.onmessage = (e) => {
+                clearTimeout(fallbackTimer);
+                // Handle JSON error messages from backend
+                try {
+                    const parsed = JSON.parse(e.data);
+                    if (parsed.error) {
+                        setError(parsed.error);
+                        return;
+                    }
+                } catch {} // Not JSON = normal log line
+                setLogs(prev => {
+                    const next = [...prev, e.data];
+                    return next.length > 2000 ? next.slice(-1500) : next;
+                });
+            };
+            ws.onclose = () => setConnected(false);
+            ws.onerror = () => {
+                setConnected(false);
+                fetchHttpLogs(); // Fallback to HTTP
+            };
+        } catch (e) {
+            setError(`WebSocket error: ${e.message}`);
+            fetchHttpLogs();
+        }
+
+        return () => {
+            clearTimeout(fallbackTimer);
+            ws?.close();
         };
-        ws.onclose = () => setConnected(false);
-        ws.onerror = () => setConnected(false);
-        return () => ws.close();
     }, [container]);
 
     useEffect(() => {
@@ -542,6 +591,7 @@ const LogViewer = ({ container, onClose }) => {
                         </span>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <ActionBtn icon="⟳" label="Refresh" small onClick={fetchHttpLogs} color="var(--accent)" />
                         <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', cursor: 'pointer' }}>
                             <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
                             auto-scroll
@@ -549,14 +599,23 @@ const LogViewer = ({ container, onClose }) => {
                         <ActionBtn icon="✕" label="Fechar" small onClick={onClose} color="var(--text-secondary)" />
                     </div>
                 </div>
+                {error && (
+                    <div style={{
+                        padding: '8px 20px', background: 'var(--red-dim)',
+                        fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--red)',
+                        borderBottom: '1px solid var(--border)',
+                    }}>
+                        ✗ {error}
+                    </div>
+                )}
                 <div ref={logRef} style={{
                     flex: 1, overflowY: 'auto', padding: '12px 16px',
                     fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: 1.65,
                     color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
                 }}>
-                    {logs.length === 0 ? (
+                    {logs.length === 0 && !error ? (
                         <div style={{ color: 'var(--text-muted)', padding: 20, textAlign: 'center' }}>
-                            Aguardando logs...
+                            {connected ? 'Aguardando logs...' : 'Conectando...'}
                         </div>
                     ) : logs.map((line, i) => (
                         <div key={i} style={{
