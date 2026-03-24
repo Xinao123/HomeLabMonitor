@@ -142,14 +142,26 @@
             font-size: 18px;
             box-shadow: 0 0 24px rgba(34, 211, 238, 0.18);
         }
-        .dashboard-grid {
+        .dashboard-layout {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
             gap: 16px;
             align-items: start;
         }
-        .containers-card {
-            grid-column: span 2;
+        .left-column {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .left-top-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            align-items: start;
+        }
+        .right-column {
+            min-width: 0;
         }
         .card-surface {
             background:
@@ -232,11 +244,8 @@
         }
 
         @media (max-width: 1200px) {
-            .dashboard-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-            .containers-card {
-                grid-column: 1 / -1;
+            .dashboard-layout {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -248,11 +257,8 @@
                 flex-wrap: wrap;
                 gap: 12px;
             }
-            .dashboard-grid {
+            .left-top-grid {
                 grid-template-columns: 1fr;
-            }
-            .containers-card {
-                grid-column: auto;
             }
             .container-row {
                 grid-template-columns: 1fr;
@@ -608,7 +614,7 @@ const ContainersPanel = ({ containers, onRefresh, onViewLogs, onOpenTerminal }) 
     const total = containers ? containers.length : 0;
 
     return (
-        <Card className="stagger-2 containers-card">
+        <Card className="stagger-2">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
                 <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
                     <span style={{ color: 'var(--green)', marginRight: 8 }}>◆</span>
@@ -1232,11 +1238,17 @@ const App = () => {
             </header>
 
             {/* Grid */}
-            <div className="dashboard-grid">
-                <SystemOverview metrics={metrics} dockerInfo={dockerInfo} />
-                {metrics && <NetworkWidget current={metrics} previous={prevMetrics} />}
-                <ComposePanel projects={composeProjects} onRefresh={() => { fetchCompose(); fetchContainers(); }} />
-                <ContainersPanel containers={containers} onRefresh={fetchContainers} onViewLogs={setLogTarget} onOpenTerminal={setTermTarget} />
+            <div className="dashboard-layout">
+                <div className="left-column">
+                    <div className="left-top-grid" style={{ gridTemplateColumns: metrics ? 'repeat(2, minmax(0, 1fr))' : '1fr' }}>
+                        <SystemOverview metrics={metrics} dockerInfo={dockerInfo} />
+                        {metrics && <NetworkWidget current={metrics} previous={prevMetrics} />}
+                    </div>
+                    <ContainersPanel containers={containers} onRefresh={fetchContainers} onViewLogs={setLogTarget} onOpenTerminal={setTermTarget} />
+                </div>
+                <div className="right-column">
+                    <ComposePanel projects={composeProjects} onRefresh={() => { fetchCompose(); fetchContainers(); }} />
+                </div>
             </div>
 
             {/* Log Modal */}
