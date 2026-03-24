@@ -13,6 +13,7 @@ Runs locally on the server — accesses Docker socket directly.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import subprocess
@@ -74,6 +75,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("homelab")
 
 BOOT_TIME = psutil.boot_time()
+
+# ─── Metrics History (in-memory ring buffer) ──────────────────────────────────
+# Stores last 90 data points = 30 min at 20s intervals
+METRICS_HISTORY: collections.deque = collections.deque(maxlen=90)
+
+# ─── Action Audit Log ─────────────────────────────────────────────────────────
+# Stores last 200 actions performed via the panel
+ACTION_LOG: collections.deque = collections.deque(maxlen=200)
+
+def log_action(target: str, action: str, result: str = "ok", detail: str = ""):
+    ACTION_LOG.appendleft({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "target": target,
+        "action": action,
+        "result": result,
+        "detail": detail,
+    })
 
 
 @app.exception_handler(Exception)
@@ -318,8 +336,10 @@ async def container_action(container_id: str, body: ContainerAction):
 
     try:
         actions[body.action]()
+        log_action(target=container.name, action=body.action, result="ok")
         return {"ok": True, "container": container_id, "action": body.action}
     except APIError as e:
+        log_action(target=container.name, action=body.action, result="error", detail=str(e.explanation))
         raise HTTPException(500, f"Docker error: {e.explanation}")
     finally:
         client.close()
@@ -399,13 +419,146 @@ async def get_logs(container_id: str, tail: int = Query(200, ge=1, le=5000)):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SYSTEM METRICS (WebSocket — real-time polling)
+#  INTERACTIVE TERMINAL (WebSocket — docker exec)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@app.websocket("/ws/exec/{container_id}")
+async def exec_terminal(ws: WebSocket, container_id: str):
+    """Interactive shell inside a container via WebSocket.
+
+    Protocol:
+        → client sends JSON: {"type": "input", "data": "ls -la\\n"}
+        → client sends JSON: {"type": "resize", "cols": 120, "rows": 40}
+        ← server sends JSON: {"type": "output", "data": "..."}
+        ← server sends JSON: {"type": "error", "data": "..."}
+        ← server sends JSON: {"type": "exit", "code": 0}
+    """
+    await ws.accept()
+    client = get_docker_client()
+
+    try:
+        container = client.containers.get(container_id)
+    except NotFound:
+        await ws.send_json({"type": "error", "data": f"Container {container_id} not found"})
+        await ws.close()
+        return
+
+    if container.status != "running":
+        await ws.send_json({"type": "error", "data": f"Container is {container.status}, must be running"})
+        await ws.close()
+        return
+
+    # Detect available shell
+    shell = "/bin/sh"
+    for candidate in ["/bin/bash", "/bin/zsh", "/bin/ash"]:
+        try:
+            test = container.exec_run(f"test -x {candidate}", demux=False)
+            if test.exit_code == 0:
+                shell = candidate
+                break
+        except Exception:
+            pass
+
+    # Create exec instance with TTY
+    try:
+        exec_id = client.api.exec_create(
+            container.id,
+            cmd=shell,
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            tty=True,
+            environment={"TERM": "xterm-256color"},
+        )
+        sock = client.api.exec_start(exec_id["Id"], socket=True, tty=True)
+        # Get the underlying socket
+        raw_sock = sock._sock
+        raw_sock.setblocking(False)
+    except APIError as e:
+        await ws.send_json({"type": "error", "data": f"Exec failed: {e.explanation}"})
+        await ws.close()
+        return
+    except Exception as e:
+        await ws.send_json({"type": "error", "data": f"Exec failed: {str(e)}"})
+        await ws.close()
+        return
+
+    await ws.send_json({"type": "output", "data": f"Connected to {container.name} ({shell})\r\n"})
+
+    stop_event = asyncio.Event()
+
+    async def _read_from_container():
+        """Read output from the exec socket and send to WebSocket."""
+        loop = asyncio.get_event_loop()
+        while not stop_event.is_set():
+            try:
+                data = await loop.run_in_executor(None, lambda: raw_sock.recv(4096))
+                if not data:
+                    break
+                text = data.decode("utf-8", errors="replace")
+                await ws.send_json({"type": "output", "data": text})
+            except BlockingIOError:
+                await asyncio.sleep(0.01)
+            except OSError:
+                break
+            except Exception:
+                break
+
+        if not stop_event.is_set():
+            # Get exit code
+            try:
+                inspect = client.api.exec_inspect(exec_id["Id"])
+                code = inspect.get("ExitCode", -1)
+                await ws.send_json({"type": "exit", "code": code})
+            except Exception:
+                await ws.send_json({"type": "exit", "code": -1})
+
+    # Start reader task
+    reader_task = asyncio.create_task(_read_from_container())
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            msg_type = msg.get("type", "")
+
+            if msg_type == "input":
+                data = msg.get("data", "")
+                if data:
+                    try:
+                        raw_sock.sendall(data.encode("utf-8"))
+                    except OSError:
+                        break
+
+            elif msg_type == "resize":
+                cols = msg.get("cols", 80)
+                rows = msg.get("rows", 24)
+                try:
+                    client.api.exec_resize(exec_id["Id"], height=rows, width=cols)
+                except Exception:
+                    pass
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Terminal error: {e}")
+    finally:
+        stop_event.set()
+        reader_task.cancel()
+        try:
+            raw_sock.close()
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+        client.close()
 
 @app.websocket("/ws/metrics")
 async def stream_metrics(ws: WebSocket):
-    """Stream system metrics every 2 seconds via WebSocket."""
+    """Stream system metrics every 2 seconds via WebSocket. Store history every 20s."""
     await ws.accept()
+    tick = 0
     try:
         while True:
             mem = psutil.virtual_memory()
@@ -413,7 +566,7 @@ async def stream_metrics(ws: WebSocket):
             net = psutil.net_io_counters()
             load_1, load_5, load_15 = os.getloadavg()
 
-            await ws.send_json({
+            data = {
                 "cpu_percent": psutil.cpu_percent(interval=0.3),
                 "per_cpu": psutil.cpu_percent(interval=0.1, percpu=True),
                 "memory_percent": mem.percent,
@@ -427,12 +580,40 @@ async def stream_metrics(ws: WebSocket):
                 "load_avg": [round(load_1, 2), round(load_5, 2), round(load_15, 2)],
                 "uptime_seconds": int(time.time() - BOOT_TIME),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+
+            await ws.send_json(data)
+
+            # Store snapshot every 20s (every 10 ticks × 2s)
+            tick += 1
+            if tick % 10 == 0:
+                METRICS_HISTORY.append({
+                    "cpu": data["cpu_percent"],
+                    "mem": data["memory_percent"],
+                    "disk": data["disk_percent"],
+                    "net_sent": data["net_sent"],
+                    "net_recv": data["net_recv"],
+                    "load": data["load_avg"][0],
+                    "ts": data["timestamp"],
+                })
+
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass
     except Exception:
         pass
+
+
+@app.get("/api/metrics/history")
+async def get_metrics_history():
+    """Return stored metrics history (up to 30min)."""
+    return {"history": list(METRICS_HISTORY), "points": len(METRICS_HISTORY)}
+
+
+@app.get("/api/actions")
+async def get_action_log(limit: int = Query(50, ge=1, le=200)):
+    """Return recent action audit log."""
+    return {"actions": list(ACTION_LOG)[:limit]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

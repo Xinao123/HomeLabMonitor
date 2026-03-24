@@ -7,6 +7,10 @@
     <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <style>
@@ -334,7 +338,7 @@ const SystemOverview = ({ metrics, dockerInfo }) => {
 };
 
 // ─── CONTAINER ROW ───────────────────────────────────────────────────────────
-const ContainerRow = ({ container, onAction, onViewLogs }) => {
+const ContainerRow = ({ container, onAction, onViewLogs, onOpenTerminal }) => {
     const [loading, setLoading] = useState(null);
     const isRunning = container.status === 'running';
     const isPaused = container.status === 'paused';
@@ -407,14 +411,20 @@ const ContainerRow = ({ container, onAction, onViewLogs }) => {
                 )}
             </div>
 
-            <ActionBtn icon="⧉" label="Logs" small onClick={() => onViewLogs(container)}
-                color="var(--text-secondary)" />
+            <div style={{ display: 'flex', gap: 2 }}>
+                {isRunning && (
+                    <ActionBtn icon="❯_" label="Shell" small onClick={() => onOpenTerminal(container)}
+                        color="var(--accent)" />
+                )}
+                <ActionBtn icon="⧉" label="Logs" small onClick={() => onViewLogs(container)}
+                    color="var(--text-secondary)" />
+            </div>
         </div>
     );
 };
 
 // ─── CONTAINERS PANEL ────────────────────────────────────────────────────────
-const ContainersPanel = ({ containers, onRefresh, onViewLogs }) => {
+const ContainersPanel = ({ containers, onRefresh, onViewLogs, onOpenTerminal }) => {
     const [filter, setFilter] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
 
@@ -474,7 +484,7 @@ const ContainersPanel = ({ containers, onRefresh, onViewLogs }) => {
                         {containers && containers.length === 0 ? 'Nenhum container encontrado' : 'Nenhum resultado para o filtro'}
                     </div>
                 ) : filtered.map(c => (
-                    <ContainerRow key={c.id} container={c} onAction={onRefresh} onViewLogs={onViewLogs} />
+                    <ContainerRow key={c.id} container={c} onAction={onRefresh} onViewLogs={onViewLogs} onOpenTerminal={onOpenTerminal} />
                 ))}
             </div>
         </Card>
@@ -631,6 +641,199 @@ const LogViewer = ({ container, onClose }) => {
     );
 };
 
+// ─── TERMINAL MODAL ──────────────────────────────────────────────────────────
+const TerminalModal = ({ container, onClose }) => {
+    const termRef = useRef(null);
+    const termInstance = useRef(null);
+    const wsRef = useRef(null);
+    const fitAddonRef = useRef(null);
+    const [connected, setConnected] = useState(false);
+
+    useEffect(() => {
+        if (!container || !termRef.current) return;
+
+        // Create xterm instance
+        const term = new Terminal({
+            cursorBlink: true,
+            cursorStyle: 'block',
+            fontSize: 13,
+            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+            theme: {
+                background: '#0a0e14',
+                foreground: '#e2e8f0',
+                cursor: '#22d3ee',
+                cursorAccent: '#0a0e14',
+                selectionBackground: 'rgba(34, 211, 238, 0.25)',
+                black: '#0a0e14',
+                red: '#f87171',
+                green: '#34d399',
+                yellow: '#fbbf24',
+                blue: '#60a5fa',
+                magenta: '#a78bfa',
+                cyan: '#22d3ee',
+                white: '#e2e8f0',
+                brightBlack: '#556677',
+                brightRed: '#fca5a5',
+                brightGreen: '#6ee7b7',
+                brightYellow: '#fde68a',
+                brightBlue: '#93c5fd',
+                brightMagenta: '#c4b5fd',
+                brightCyan: '#67e8f9',
+                brightWhite: '#f8fafc',
+            },
+            allowProposedApi: true,
+            scrollback: 5000,
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+        term.loadAddon(fitAddon);
+        term.loadAddon(webLinksAddon);
+        term.open(termRef.current);
+
+        // Small delay for DOM to settle then fit
+        setTimeout(() => {
+            try { fitAddon.fit(); } catch {}
+        }, 100);
+
+        termInstance.current = term;
+        fitAddonRef.current = fitAddon;
+
+        // WebSocket connection
+        const ws = new WebSocket(`${WS_BASE}/ws/exec/${container.id}`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            setConnected(true);
+            // Send initial size
+            setTimeout(() => {
+                try { fitAddon.fit(); } catch {}
+                ws.send(JSON.stringify({
+                    type: 'resize',
+                    cols: term.cols,
+                    rows: term.rows,
+                }));
+            }, 200);
+        };
+
+        ws.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'output') {
+                    term.write(msg.data);
+                } else if (msg.type === 'error') {
+                    term.write(`\r\n\x1b[31m✗ ${msg.data}\x1b[0m\r\n`);
+                } else if (msg.type === 'exit') {
+                    term.write(`\r\n\x1b[33m● Process exited (code ${msg.code})\x1b[0m\r\n`);
+                    setConnected(false);
+                }
+            } catch {
+                term.write(e.data);
+            }
+        };
+
+        ws.onclose = () => setConnected(false);
+        ws.onerror = () => {
+            term.write('\r\n\x1b[31m✗ WebSocket connection failed\x1b[0m\r\n');
+            setConnected(false);
+        };
+
+        // Send keystrokes to container
+        term.onData((data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'input', data }));
+            }
+        });
+
+        // Handle resize
+        const handleResize = () => {
+            try {
+                fitAddon.fit();
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'resize',
+                        cols: term.cols,
+                        rows: term.rows,
+                    }));
+                }
+            } catch {}
+        };
+
+        const resizeObserver = new ResizeObserver(handleResize);
+        resizeObserver.observe(termRef.current);
+        window.addEventListener('resize', handleResize);
+
+        // Focus terminal
+        setTimeout(() => term.focus(), 300);
+
+        return () => {
+            resizeObserver.disconnect();
+            window.removeEventListener('resize', handleResize);
+            ws.close();
+            term.dispose();
+        };
+    }, [container]);
+
+    if (!container) return null;
+
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 20,
+        }} onClick={onClose}>
+            <div onClick={e => e.stopPropagation()} style={{
+                background: '#0a0e14', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-lg)', width: '100%', maxWidth: 1000,
+                height: '75vh', display: 'flex', flexDirection: 'column',
+                animation: 'fadeIn 0.2s ease-out',
+                overflow: 'hidden',
+            }}>
+                {/* Title bar */}
+                <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '10px 16px',
+                    background: 'var(--bg-card)',
+                    borderBottom: '1px solid var(--border)',
+                    flexShrink: 0,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {/* Traffic light dots */}
+                        <div style={{ display: 'flex', gap: 6 }}>
+                            <span onClick={onClose} style={{ width: 12, height: 12, borderRadius: '50%', background: '#f87171', cursor: 'pointer', display: 'inline-block' }} title="Fechar" />
+                            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fbbf24', display: 'inline-block', opacity: 0.5 }} />
+                            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#34d399', display: 'inline-block', opacity: 0.5 }} />
+                        </div>
+                        <span style={{
+                            fontFamily: 'var(--font-mono)', fontSize: '12px',
+                            color: 'var(--text-secondary)',
+                        }}>
+                            <span style={{ color: 'var(--accent)' }}>❯</span> {container.name}
+                        </span>
+                        <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            fontSize: '10px', fontFamily: 'var(--font-mono)',
+                            color: connected ? 'var(--green)' : 'var(--red)',
+                            background: connected ? 'var(--green-dim)' : 'var(--red-dim)',
+                            padding: '2px 8px', borderRadius: 10,
+                        }}>
+                            ● {connected ? 'connected' : 'disconnected'}
+                        </span>
+                    </div>
+                    <ActionBtn icon="✕" label="Fechar" small onClick={onClose} color="var(--text-secondary)" />
+                </div>
+                {/* Terminal container */}
+                <div ref={termRef} style={{
+                    flex: 1,
+                    padding: '4px 0 4px 8px',
+                    overflow: 'hidden',
+                }} />
+            </div>
+        </div>
+    );
+};
+
 // ─── COMPOSE PANEL ───────────────────────────────────────────────────────────
 const ComposePanel = ({ projects, onRefresh }) => {
     const [loading, setLoading] = useState(null);
@@ -766,6 +969,7 @@ const App = () => {
     const [dockerInfo, setDockerInfo] = useState(null);
     const [composeProjects, setComposeProjects] = useState(null);
     const [logTarget, setLogTarget] = useState(null);
+    const [termTarget, setTermTarget] = useState(null);
     const [wsStatus, setWsStatus] = useState('connecting');
 
     // WebSocket for real-time metrics
@@ -880,11 +1084,14 @@ const App = () => {
                 <SystemOverview metrics={metrics} dockerInfo={dockerInfo} />
                 {metrics && <NetworkWidget current={metrics} previous={prevMetrics} />}
                 <ComposePanel projects={composeProjects} onRefresh={() => { fetchCompose(); fetchContainers(); }} />
-                <ContainersPanel containers={containers} onRefresh={fetchContainers} onViewLogs={setLogTarget} />
+                <ContainersPanel containers={containers} onRefresh={fetchContainers} onViewLogs={setLogTarget} onOpenTerminal={setTermTarget} />
             </div>
 
             {/* Log Modal */}
             <LogViewer container={logTarget} onClose={() => setLogTarget(null)} />
+
+            {/* Terminal Modal */}
+            <TerminalModal container={termTarget} onClose={() => setTermTarget(null)} />
 
             {/* Toasts */}
             <ToastContainer />
