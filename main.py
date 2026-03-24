@@ -13,9 +13,11 @@ Runs locally on the server — accesses Docker socket directly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +70,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("homelab")
+
 BOOT_TIME = psutil.boot_time()
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Unhandled error on {request.url.path}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "path": str(request.url.path)},
+    )
 
 
 # ─── Models ───────────────────────────────────────────────────────────────────
@@ -173,18 +187,26 @@ def _container_info(c) -> dict:
         stats = {"cpu_percent": 0, "memory_usage": 0, "memory_limit": 0, "memory_percent": 0}
 
     ports = {}
-    if c.attrs.get("NetworkSettings", {}).get("Ports"):
-        for container_port, bindings in c.attrs["NetworkSettings"]["Ports"].items():
+    try:
+        raw_ports = c.attrs.get("NetworkSettings", {}).get("Ports") or {}
+        for container_port, bindings in raw_ports.items():
             if bindings:
-                ports[container_port] = [{"HostIp": b["HostIp"], "HostPort": b["HostPort"]} for b in bindings]
+                ports[container_port] = [{"HostIp": b.get("HostIp", ""), "HostPort": b.get("HostPort", "")} for b in bindings]
+    except Exception:
+        pass
 
     labels = c.labels or {}
+
+    try:
+        image_name = str(c.image.tags[0]) if c.image.tags else c.attrs.get("Config", {}).get("Image", "unknown")
+    except Exception:
+        image_name = c.attrs.get("Config", {}).get("Image", "unknown")
 
     return {
         "id": c.short_id,
         "id_full": c.id,
         "name": c.name,
-        "image": str(c.image.tags[0]) if c.image.tags else c.attrs["Config"]["Image"],
+        "image": image_name,
         "status": c.status,
         "state": c.attrs.get("State", {}).get("Health", {}).get("Status", c.status),
         "created": c.attrs.get("Created", ""),
@@ -203,28 +225,58 @@ async def list_containers(all: bool = Query(True, description="Include stopped c
     client = get_docker_client()
     try:
         containers = client.containers.list(all=all)
-        # Gather basic info first (stats are slow for many containers)
         results = []
         for c in containers:
-            info = {
-                "id": c.short_id,
-                "id_full": c.id,
-                "name": c.name,
-                "image": str(c.image.tags[0]) if c.image.tags else c.attrs["Config"]["Image"],
-                "status": c.status,
-                "state_health": c.attrs.get("State", {}).get("Health", {}).get("Status", ""),
-                "created": c.attrs.get("Created", ""),
-                "started_at": c.attrs.get("State", {}).get("StartedAt", ""),
-                "ports": {},
-                "labels": c.labels or {},
-                "compose_project": (c.labels or {}).get("com.docker.compose.project", ""),
-                "compose_service": (c.labels or {}).get("com.docker.compose.service", ""),
-            }
-            if c.attrs.get("NetworkSettings", {}).get("Ports"):
-                for cp, bindings in c.attrs["NetworkSettings"]["Ports"].items():
-                    if bindings:
-                        info["ports"][cp] = [{"HostIp": b["HostIp"], "HostPort": b["HostPort"]} for b in bindings]
-            results.append(info)
+            try:
+                # Image name — handle deleted/dangling images
+                try:
+                    image_name = str(c.image.tags[0]) if c.image.tags else c.attrs.get("Config", {}).get("Image", "unknown")
+                except Exception:
+                    image_name = c.attrs.get("Config", {}).get("Image", "unknown")
+
+                # Ports — handle malformed bindings
+                ports = {}
+                try:
+                    raw_ports = c.attrs.get("NetworkSettings", {}).get("Ports") or {}
+                    for cp, bindings in raw_ports.items():
+                        if bindings:
+                            ports[cp] = [{"HostIp": b.get("HostIp", ""), "HostPort": b.get("HostPort", "")} for b in bindings]
+                except Exception:
+                    pass
+
+                labels = c.labels or {}
+                info = {
+                    "id": c.short_id,
+                    "id_full": c.id,
+                    "name": c.name,
+                    "image": image_name,
+                    "status": c.status,
+                    "state_health": c.attrs.get("State", {}).get("Health", {}).get("Status", ""),
+                    "created": c.attrs.get("Created", ""),
+                    "started_at": c.attrs.get("State", {}).get("StartedAt", ""),
+                    "ports": ports,
+                    "labels": labels,
+                    "compose_project": labels.get("com.docker.compose.project", ""),
+                    "compose_service": labels.get("com.docker.compose.service", ""),
+                }
+                results.append(info)
+            except Exception as e:
+                # Skip broken container but log it
+                results.append({
+                    "id": getattr(c, 'short_id', 'unknown'),
+                    "id_full": getattr(c, 'id', ''),
+                    "name": getattr(c, 'name', 'unknown'),
+                    "image": "error",
+                    "status": getattr(c, 'status', 'unknown'),
+                    "state_health": "",
+                    "created": "",
+                    "started_at": "",
+                    "ports": {},
+                    "labels": {},
+                    "compose_project": "",
+                    "compose_service": "",
+                    "_error": str(e),
+                })
         return {"containers": results, "total": len(results)}
     finally:
         client.close()
