@@ -163,6 +163,17 @@
         .right-column {
             min-width: 0;
         }
+        .compose-scroll-card {
+            max-height: 78vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .compose-scroll-content {
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
         .card-surface {
             background:
                 linear-gradient(130deg, rgba(255, 255, 255, 0.03), transparent 40%),
@@ -246,6 +257,13 @@
         @media (max-width: 1200px) {
             .dashboard-layout {
                 grid-template-columns: 1fr;
+            }
+            .compose-scroll-card {
+                max-height: none;
+            }
+            .compose-scroll-content {
+                overflow: visible;
+                padding-right: 0;
             }
         }
 
@@ -1034,55 +1052,59 @@ const ComposePanel = ({ projects, onRefresh }) => {
     };
 
     return (
-        <Card className="stagger-3">
+        <Card className="stagger-3 compose-scroll-card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                 <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
                     <span style={{ color: 'var(--purple)', marginRight: 8 }}>◆</span>COMPOSE
                 </h2>
                 <ActionBtn icon="⟳" label="Refresh" onClick={onRefresh} small />
             </div>
-            {(!projects || projects.length === 0) ? (
-                <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                    Nenhum projeto compose detectado
-                </div>
-            ) : projects.map(p => (
-                <div key={p.name} style={{
-                    padding: '12px 0', borderBottom: '1px solid var(--border)',
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <div>
-                            <span style={{ fontWeight: 600, fontSize: '14px' }}>⎔ {p.name}</span>
-                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', marginTop: 2 }}>
-                                {p.working_dir}
+
+            <div className="compose-scroll-content">
+                {(!projects || projects.length === 0) ? (
+                    <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                        Nenhum projeto compose detectado
+                    </div>
+                ) : projects.map(p => (
+                    <div key={p.name} style={{
+                        padding: '12px 0', borderBottom: '1px solid var(--border)',
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <div>
+                                <span style={{ fontWeight: 600, fontSize: '14px' }}>⎔ {p.name}</span>
+                                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)', marginTop: 2 }}>
+                                    {p.working_dir}
+                                </div>
                             </div>
                         </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+                            {p.services.map(s => (
+                                <span key={s.name} style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                    fontSize: '11px', fontFamily: 'var(--font-mono)',
+                                    padding: '2px 8px', borderRadius: 4,
+                                    background: s.status === 'running' ? 'var(--green-dim)' : 'var(--red-dim)',
+                                    color: s.status === 'running' ? 'var(--green)' : 'var(--red)',
+                                }}>
+                                    <span className={`service-dot ${s.status === 'running' ? '' : 'status-square'}`} style={{ background: s.status === 'running' ? 'var(--green)' : 'var(--red)' }} />
+                                    <span>{s.name}</span>
+                                </span>
+                            ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            <ActionBtn icon="▶" label="Up" small onClick={() => handleAction(p, 'up')}
+                                color="var(--green)" disabled={!!loading} />
+                            <ActionBtn icon="■" label="Down" small onClick={() => handleAction(p, 'down')}
+                                color="var(--red)" disabled={!!loading} />
+                            <ActionBtn icon="⟳" label="Rebuild" small onClick={() => handleAction(p, 'rebuild')}
+                                color="var(--amber)" disabled={!!loading} />
+                            <ActionBtn icon="↓" label="Pull" small onClick={() => handleAction(p, 'pull')}
+                                color="var(--accent)" disabled={!!loading} />
+                        </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
-                        {p.services.map(s => (
-                            <span key={s.name} style={{
-                                display: 'inline-flex', alignItems: 'center', gap: 4,
-                                fontSize: '11px', fontFamily: 'var(--font-mono)',
-                                padding: '2px 8px', borderRadius: 4,
-                                background: s.status === 'running' ? 'var(--green-dim)' : 'var(--red-dim)',
-                                color: s.status === 'running' ? 'var(--green)' : 'var(--red)',
-                            }}>
-                                <span className={`service-dot ${s.status === 'running' ? '' : 'status-square'}`} style={{ background: s.status === 'running' ? 'var(--green)' : 'var(--red)' }} />
-                                <span>{s.name}</span>
-                            </span>
-                        ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                        <ActionBtn icon="▶" label="Up" small onClick={() => handleAction(p, 'up')}
-                            color="var(--green)" disabled={!!loading} />
-                        <ActionBtn icon="■" label="Down" small onClick={() => handleAction(p, 'down')}
-                            color="var(--red)" disabled={!!loading} />
-                        <ActionBtn icon="⟳" label="Rebuild" small onClick={() => handleAction(p, 'rebuild')}
-                            color="var(--amber)" disabled={!!loading} />
-                        <ActionBtn icon="↓" label="Pull" small onClick={() => handleAction(p, 'pull')}
-                            color="var(--accent)" disabled={!!loading} />
-                    </div>
-                </div>
-            ))}
+                ))}
+            </div>
+
             {output && (
                 <div style={{
                     marginTop: 12, padding: 10, background: 'var(--bg-primary)',
@@ -1100,7 +1122,6 @@ const ComposePanel = ({ projects, onRefresh }) => {
         </Card>
     );
 };
-
 // ─── NETWORK WIDGET ──────────────────────────────────────────────────────────
 const NetworkWidget = ({ current, previous }) => {
     const sentRate = previous ? Math.max(0, (current.net_sent - previous.net_sent) / 2) : 0;
