@@ -45,11 +45,19 @@
 
         body {
             font-family: var(--font-sans);
-            background: var(--bg-primary);
+            background:
+                radial-gradient(circle at 10% -20%, rgba(34, 211, 238, 0.12), transparent 42%),
+                radial-gradient(circle at 95% -15%, rgba(167, 139, 250, 0.10), transparent 45%),
+                linear-gradient(180deg, #070b11 0%, #0a0e14 38%, #0b1119 100%);
             color: var(--text-primary);
             line-height: 1.5;
             min-height: 100vh;
             overflow-x: hidden;
+        }
+
+        #root {
+            position: relative;
+            z-index: 1;
         }
 
         /* Scrollbar */
@@ -103,6 +111,168 @@
         .toast-success { background: var(--green-dim); border-color: var(--green); color: var(--green); }
         .toast-error { background: var(--red-dim); border-color: var(--red); color: var(--red); }
         .toast-info { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+
+        .app-shell {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px 24px 40px;
+        }
+        .dashboard-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .brand-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-dim);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            box-shadow: 0 0 24px rgba(34, 211, 238, 0.18);
+        }
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 16px;
+            align-items: start;
+        }
+        .containers-card {
+            grid-column: span 2;
+        }
+        .card-surface {
+            background:
+                linear-gradient(130deg, rgba(255, 255, 255, 0.03), transparent 40%),
+                var(--bg-card);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+        .ring-grid {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .metric-ring {
+            text-align: center;
+            min-width: 110px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+        }
+        .metric-ring-visual {
+            position: relative;
+            display: grid;
+            place-items: center;
+            margin: 0 auto;
+        }
+        .metric-ring-value {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            font-family: var(--font-mono);
+            font-size: 18px;
+            font-weight: 700;
+            line-height: 1;
+            pointer-events: none;
+        }
+        .metric-ring-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .metric-ring-detail {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            line-height: 1.35;
+        }
+        .container-row {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .action-group {
+            display: flex;
+            gap: 2px;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        .status-square {
+            border-radius: 2px;
+        }
+        .service-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 1200px) {
+            .dashboard-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .containers-card {
+                grid-column: 1 / -1;
+            }
+        }
+
+        @media (max-width: 860px) {
+            .app-shell {
+                padding: 16px 14px 28px;
+            }
+            .dashboard-header {
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            .containers-card {
+                grid-column: auto;
+            }
+            .container-row {
+                grid-template-columns: 1fr;
+                gap: 9px;
+            }
+            .action-group {
+                justify-content: flex-start;
+            }
+            .ring-grid {
+                justify-content: center;
+            }
+            .toast-container {
+                left: 12px;
+                right: 12px;
+                bottom: 12px;
+            }
+            .toast {
+                max-width: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -113,7 +283,7 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const API = window.location.origin;
-const WS_BASE = `ws://${window.location.host}`;
+const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
 const formatBytes = (bytes, decimals = 1) => {
@@ -179,32 +349,28 @@ const ToastContainer = () => {
 
 // ─── METRIC RING ─────────────────────────────────────────────────────────────
 const MetricRing = ({ value, label, detail, color = 'var(--accent)', size = 90, stroke = 6 }) => {
+    const safeValue = Math.max(0, Math.min(100, Number(value) || 0));
     const r = (size - stroke) / 2;
     const circ = 2 * Math.PI * r;
-    const offset = circ - (value / 100) * circ;
+    const offset = circ - (safeValue / 100) * circ;
     return (
-        <div style={{ textAlign: 'center' }}>
-            <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-                <circle cx={size/2} cy={size/2} r={r} fill="none"
-                    stroke="var(--border)" strokeWidth={stroke} />
-                <circle cx={size/2} cy={size/2} r={r} fill="none"
-                    stroke={color} strokeWidth={stroke}
-                    strokeDasharray={circ} strokeDashoffset={offset}
-                    strokeLinecap="round"
-                    style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
-            </svg>
-            <div style={{
-                marginTop: -size/2 - 18,
-                marginBottom: size/2 - 22,
-                fontFamily: 'var(--font-mono)',
-                fontSize: '18px',
-                fontWeight: 700,
-                color
-            }}>
-                {Math.round(value)}%
+        <div className="metric-ring">
+            <div className="metric-ring-visual" style={{ width: size, height: size }}>
+                <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+                    <circle cx={size/2} cy={size/2} r={r} fill="none"
+                        stroke="var(--border)" strokeWidth={stroke} />
+                    <circle cx={size/2} cy={size/2} r={r} fill="none"
+                        stroke={color} strokeWidth={stroke}
+                        strokeDasharray={circ} strokeDashoffset={offset}
+                        strokeLinecap="round"
+                        style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
+                </svg>
+                <div className="metric-ring-value" style={{ color }}>
+                    {Math.round(safeValue)}%
+                </div>
             </div>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginTop: 4 }}>{label}</div>
-            {detail && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{detail}</div>}
+            <div className="metric-ring-label">{label}</div>
+            {detail && <div className="metric-ring-detail">{detail}</div>}
         </div>
     );
 };
@@ -212,11 +378,11 @@ const MetricRing = ({ value, label, detail, color = 'var(--accent)', size = 90, 
 // ─── STATUS BADGE ────────────────────────────────────────────────────────────
 const StatusBadge = ({ status }) => {
     const map = {
-        running: { color: 'var(--green)', bg: 'var(--green-dim)', icon: '●' },
-        exited:  { color: 'var(--red)', bg: 'var(--red-dim)', icon: '■' },
-        paused:  { color: 'var(--amber)', bg: 'var(--amber-dim)', icon: '❚❚' },
-        created: { color: 'var(--text-muted)', bg: 'var(--bg-elevated)', icon: '○' },
-        restarting: { color: 'var(--amber)', bg: 'var(--amber-dim)', icon: '↻' },
+        running: { color: 'var(--green)', bg: 'var(--green-dim)', marker: 'dot' },
+        exited:  { color: 'var(--red)', bg: 'var(--red-dim)', marker: 'square' },
+        paused:  { color: 'var(--amber)', bg: 'var(--amber-dim)', marker: 'pause' },
+        created: { color: 'var(--text-muted)', bg: 'var(--bg-elevated)', marker: 'dot' },
+        restarting: { color: 'var(--amber)', bg: 'var(--amber-dim)', marker: 'ring' },
     };
     const s = map[status] || map.created;
     return (
@@ -227,7 +393,14 @@ const StatusBadge = ({ status }) => {
             padding: '3px 10px', borderRadius: 20,
             textTransform: 'uppercase', letterSpacing: '0.5px'
         }}>
-            <span style={{ fontSize: '8px' }}>{s.icon}</span> {status}
+            {s.marker === 'pause' ? (
+                <span style={{ fontSize: '9px', lineHeight: 1 }}>II</span>
+            ) : s.marker === 'ring' ? (
+                <span className="status-dot" style={{ background: 'transparent', border: `1px solid ${s.color}` }} />
+            ) : (
+                <span className={`status-dot ${s.marker === 'square' ? 'status-square' : ''}`} style={{ background: s.color }} />
+            )}
+            {status}
         </span>
     );
 };
@@ -247,8 +420,8 @@ const ActionBtn = ({ icon, label, onClick, color = 'var(--accent)', disabled = f
         cursor: disabled ? 'not-allowed' : 'pointer',
         transition: 'all 0.2s',
     }}
-    onMouseEnter={e => { if (!disabled) { e.target.style.background = `color-mix(in srgb, ${color} 20%, transparent)`; }}}
-    onMouseLeave={e => { if (!disabled) { e.target.style.background = `color-mix(in srgb, ${color} 10%, transparent)`; }}}
+    onMouseEnter={e => { if (!disabled) { e.currentTarget.style.background = `color-mix(in srgb, ${color} 20%, transparent)`; }}}
+    onMouseLeave={e => { if (!disabled) { e.currentTarget.style.background = `color-mix(in srgb, ${color} 10%, transparent)`; }}}
     >
         <span style={{ fontSize: small ? '12px' : '14px' }}>{icon}</span>
         {!small && label}
@@ -257,7 +430,7 @@ const ActionBtn = ({ icon, label, onClick, color = 'var(--accent)', disabled = f
 
 // ─── CARD ────────────────────────────────────────────────────────────────────
 const Card = ({ children, style = {}, className = '' }) => (
-    <div className={`fade-in ${className}`} style={{
+    <div className={`fade-in card-surface ${className}`} style={{
         background: 'var(--bg-card)',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius-lg)',
@@ -298,7 +471,7 @@ const SystemOverview = ({ metrics, dockerInfo }) => {
                     </div>
                 )}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 16 }}>
+            <div className="ring-grid">
                 <MetricRing value={metrics.cpu_percent} label="CPU" color={cpuColor}
                     detail={metrics.per_cpu ? `${metrics.per_cpu.length} cores` : ''} />
                 <MetricRing value={metrics.memory_percent} label="RAM" color={memColor}
@@ -359,14 +532,7 @@ const ContainerRow = ({ container, onAction, onViewLogs, onOpenTerminal }) => {
     };
 
     return (
-        <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto auto',
-            gap: 12,
-            alignItems: 'center',
-            padding: '12px 0',
-            borderBottom: '1px solid var(--border)',
-        }}>
+        <div className="container-row">
             <div style={{ minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 600, fontSize: '14px' }}>{container.name}</span>
@@ -388,7 +554,7 @@ const ContainerRow = ({ container, onAction, onViewLogs, onOpenTerminal }) => {
                 </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+            <div className="action-group">
                 {isRunning ? (
                     <>
                         <ActionBtn icon="↻" label="Restart" small onClick={() => handleAction('restart')}
@@ -411,7 +577,7 @@ const ContainerRow = ({ container, onAction, onViewLogs, onOpenTerminal }) => {
                 )}
             </div>
 
-            <div style={{ display: 'flex', gap: 2 }}>
+            <div className="action-group">
                 {isRunning && (
                     <ActionBtn icon="❯_" label="Shell" small onClick={() => onOpenTerminal(container)}
                         color="var(--accent)" />
@@ -442,7 +608,7 @@ const ContainersPanel = ({ containers, onRefresh, onViewLogs, onOpenTerminal }) 
     const total = containers ? containers.length : 0;
 
     return (
-        <Card className="stagger-2" style={{ gridColumn: 'span 2' }}>
+        <Card className="stagger-2 containers-card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
                 <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px' }}>
                     <span style={{ color: 'var(--green)', marginRight: 8 }}>◆</span>
@@ -894,11 +1060,12 @@ const ComposePanel = ({ projects, onRefresh }) => {
                                 background: s.status === 'running' ? 'var(--green-dim)' : 'var(--red-dim)',
                                 color: s.status === 'running' ? 'var(--green)' : 'var(--red)',
                             }}>
-                                {s.status === 'running' ? '●' : '■'} {s.name}
+                                <span className={`service-dot ${s.status === 'running' ? '' : 'status-square'}`} style={{ background: s.status === 'running' ? 'var(--green)' : 'var(--red)' }} />
+                                <span>{s.name}</span>
                             </span>
                         ))}
                     </div>
-                    <div style={{ display: 'flex', gap: 4 }}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                         <ActionBtn icon="▶" label="Up" small onClick={() => handleAction(p, 'up')}
                             color="var(--green)" disabled={!!loading} />
                         <ActionBtn icon="■" label="Down" small onClick={() => handleAction(p, 'down')}
@@ -930,8 +1097,8 @@ const ComposePanel = ({ projects, onRefresh }) => {
 
 // ─── NETWORK WIDGET ──────────────────────────────────────────────────────────
 const NetworkWidget = ({ current, previous }) => {
-    const sentRate = previous ? (current.net_sent - previous.net_sent) / 2 : 0;
-    const recvRate = previous ? (current.net_recv - previous.net_recv) / 2 : 0;
+    const sentRate = previous ? Math.max(0, (current.net_sent - previous.net_sent) / 2) : 0;
+    const recvRate = previous ? Math.max(0, (current.net_recv - previous.net_recv) / 2) : 0;
     return (
         <Card className="stagger-4">
             <h2 style={{ fontSize: '15px', fontWeight: 700, letterSpacing: '-0.3px', marginBottom: 16 }}>
@@ -1034,22 +1201,11 @@ const App = () => {
     }, [fetchContainers, fetchDockerInfo, fetchCompose]);
 
     return (
-        <div style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 24px 40px' }}>
+        <div className="app-shell">
             {/* Header */}
-            <header style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                marginBottom: 24, paddingBottom: 16,
-                borderBottom: '1px solid var(--border)',
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{
-                        width: 36, height: 36,
-                        background: 'var(--accent-glow)',
-                        border: '1px solid var(--accent-dim)',
-                        borderRadius: 8,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '18px',
-                    }}>⚙</div>
+            <header className="dashboard-header">
+                <div className="brand">
+                    <div className="brand-icon">&#9881;</div>
                     <div>
                         <h1 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.5px' }}>
                             Homelab<span style={{ color: 'var(--accent)' }}>Monitor</span>
@@ -1076,11 +1232,7 @@ const App = () => {
             </header>
 
             {/* Grid */}
-            <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: 16,
-            }}>
+            <div className="dashboard-grid">
                 <SystemOverview metrics={metrics} dockerInfo={dockerInfo} />
                 {metrics && <NetworkWidget current={metrics} previous={prevMetrics} />}
                 <ComposePanel projects={composeProjects} onRefresh={() => { fetchCompose(); fetchContainers(); }} />
